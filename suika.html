@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>フルーツドロップ</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{
+  background:#1a0a00;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  display:flex;flex-direction:column;align-items:center;
+  justify-content:flex-start;min-height:100vh;padding:12px 8px;
+  user-select:none;
+}
+h1{color:#ffcc44;font-size:1.4rem;font-weight:600;letter-spacing:0.08em;margin-bottom:10px;}
+#ui{display:flex;align-items:center;gap:16px;margin-bottom:8px;width:100%;max-width:360px;justify-content:space-between;}
+#score-box{background:rgba(255,200,60,0.12);border:1px solid rgba(255,200,60,0.3);border-radius:10px;padding:6px 16px;color:#ffcc44;font-size:14px;}
+#score-box span{font-size:22px;font-weight:600;display:block;text-align:center;}
+#next-box{background:rgba(255,200,60,0.08);border:1px solid rgba(255,200,60,0.2);border-radius:10px;padding:6px 12px;text-align:center;color:#cc9922;font-size:12px;}
+#next-canvas{display:block;margin:4px auto 0;}
+#game-wrap{position:relative;width:360px;}
+#drop-line{width:360px;height:4px;background:rgba(255,200,60,0.15);border-radius:2px;margin-bottom:0;}
+canvas#game{display:block;border-radius:0 0 16px 16px;background:#2a1200;cursor:crosshair;}
+#overlay{
+  position:absolute;top:0;left:0;width:100%;height:100%;
+  background:rgba(0,0,0,0.75);border-radius:0 0 16px 16px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  color:#ffcc44;font-size:1.2rem;font-weight:600;
+}
+#overlay.hidden{display:none;}
+#overlay p{font-size:2rem;}
+button{
+  margin-top:6px;padding:10px 28px;
+  background:#ffcc44;color:#1a0a00;border:none;
+  border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;
+}
+button:hover{background:#ffe066;}
+#hint{font-size:11px;color:#886633;margin-top:4px;text-align:center;}
+</style>
+</head>
+<body>
+<h1>🍉 フルーツドロップ</h1>
+<div id="ui">
+  <div id="score-box">スコア<span id="score">0</span></div>
+  <div id="next-box">次のフルーツ<canvas id="next-canvas" width="60" height="60"></canvas></div>
+</div>
+<div id="game-wrap">
+  <div id="drop-line"></div>
+  <canvas id="game" width="360" height="500"></canvas>
+  <div id="overlay">
+    <p>🍉</p>
+    フルーツドロップ
+    <button id="startBtn">スタート</button>
+  </div>
+</div>
+<div id="hint">クリックまたはタップでフルーツを落とす</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+const FRUITS = [
+  {name:'さくらんぼ', r:14,  color:'#e8193c', score:1,  emoji:'🍒'},
+  {name:'いちご',     r:20,  color:'#e83258', score:3,  emoji:'🍓'},
+  {name:'ぶどう',     r:28,  color:'#9b42cc', score:6,  emoji:'🍇'},
+  {name:'デコポン',   r:34,  color:'#ff8c00', score:10, emoji:'🍊'},
+  {name:'かき',       r:40,  color:'#e05a00', score:15, emoji:'🍈'},
+  {name:'りんご',     r:50,  color:'#cc1111', score:21, emoji:'🍎'},
+  {name:'なし',       r:58,  color:'#d4a017', score:28, emoji:'🍐'},
+  {name:'もも',       r:66,  color:'#ffb7c5', score:36, emoji:'🍑'},
+  {name:'パイナップル',r:76, color:'#e8c832', score:45, emoji:'🍍'},
+  {name:'メロン',     r:88,  color:'#5cb85c', score:55, emoji:'🍈'},
+  {name:'スイカ',     r:104, color:'#2d7a2d', score:100,emoji:'🍉'},
+];
+
+const W=360,H=500,WALL=18,DROP_Y=40;
+let score=0,gameOver=false,canDrop=true,dropX=W/2;
+let currentFruit=randFruit(5),nextFruit=randFruit(5);
+let merging=new Set();
+
+function randFruit(max){return Math.floor(Math.random()*(max??5));}
+
+const {Engine,Render,Runner,Bodies,Body,Events,World,Composite}=Matter;
+const engine=Engine.create({gravity:{y:1.8}});
+const world=engine.world;
+
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+const nextCanvas=document.getElementById('next-canvas');
+const nctx=nextCanvas.getContext('2d');
+
+// Walls
+const wallOpts={isStatic:true,label:'wall',friction:0.5,restitution:0.2};
+const leftWall  =Bodies.rectangle(-WALL/2,H/2,WALL,H*2,wallOpts);
+const rightWall =Bodies.rectangle(W+WALL/2,H/2,WALL,H*2,wallOpts);
+const ground    =Bodies.rectangle(W/2,H+WALL/2,W+WALL*2,WALL,wallOpts);
+World.add(world,[leftWall,rightWall,ground]);
+
+const bodies=[];// {body, fruitIdx}
+
+function addFruit(x,y,fi){
+  const f=FRUITS[fi];
+  const body=Bodies.circle(x,y,f.r,{
+    restitution:0.25,friction:0.5,frictionAir:0.008,
+    label:'fruit_'+fi,
+    density:0.002+fi*0.0005,
+    collisionFilter:{category:0x0001,mask:0x0001}
+  });
+  body._fruitIdx=fi;
+  body._id=Math.random();
+  World.add(world,body);
+  bodies.push({body,fi});
+  return body;
+}
+
+Events.on(engine,'collisionStart',e=>{
+  e.pairs.forEach(pair=>{
+    const {bodyA,bodyB}=pair;
+    if(bodyA.label.startsWith('fruit_')&&bodyB.label.startsWith('fruit_')){
+      const fiA=bodyA._fruitIdx,fiB=bodyB._fruitIdx;
+      if(fiA===fiB&&fiA<FRUITS.length-1){
+        const key=bodyA._id<bodyB._id?bodyA._id+'-'+bodyB._id:bodyB._id+'-'+bodyA._id;
+        if(merging.has(key))return;
+        merging.add(key);
+        setTimeout(()=>{
+          if(!Composite.get(world,bodyA.id,'body')||!Composite.get(world,bodyB.id,'body'))return;
+          const mx=(bodyA.position.x+bodyB.position.x)/2;
+          const my=(bodyA.position.y+bodyB.position.y)/2;
+          removeFruitBody(bodyA);removeFruitBody(bodyB);
+          const newFi=fiA+1;
+          addFruit(mx,Math.min(my,H-FRUITS[newFi].r-5),newFi);
+          score+=FRUITS[newFi].score;
+          document.getElementById('score').textContent=score;
+          merging.delete(key);
+        },60);
+      }
+    }
+  });
+});
+
+function removeFruitBody(body){
+  const idx=bodies.findIndex(b=>b.body===body);
+  if(idx!==-1)bodies.splice(idx,1);
+  World.remove(world,body);
+}
+
+function drawFruit(ctx,x,y,fi,alpha){
+  const f=FRUITS[fi];
+  ctx.save();
+  ctx.globalAlpha=alpha??1;
+  ctx.beginPath();
+  ctx.arc(x,y,f.r,0,Math.PI*2);
+  ctx.fillStyle=f.color;
+  ctx.fill();
+  // shine
+  ctx.beginPath();
+  ctx.arc(x-f.r*0.28,y-f.r*0.28,f.r*0.22,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.28)';
+  ctx.fill();
+  // emoji
+  ctx.font=`${Math.floor(f.r*1.0)}px serif`;
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.fillText(f.emoji,x,y+1);
+  ctx.restore();
+}
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  // background
+  ctx.fillStyle='#2a1200';
+  ctx.fillRect(0,0,W,H);
+  // drop guide
+  if(!gameOver&&canDrop){
+    ctx.setLineDash([4,6]);
+    ctx.strokeStyle='rgba(255,200,60,0.18)';
+    ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(dropX,DROP_Y);ctx.lineTo(dropX,H);ctx.stroke();
+    ctx.setLineDash([]);
+    drawFruit(ctx,dropX,DROP_Y,currentFruit,0.75);
+  }
+  // fruit bodies
+  bodies.forEach(({body,fi})=>{
+    drawFruit(ctx,body.position.x,body.position.y,fi,1);
+  });
+  // danger line
+  ctx.strokeStyle='rgba(255,60,60,0.25)';
+  ctx.lineWidth=1;
+  ctx.setLineDash([6,8]);
+  ctx.beginPath();ctx.moveTo(0,DROP_Y+FRUITS[currentFruit].r+10);ctx.lineTo(W,DROP_Y+FRUITS[currentFruit].r+10);ctx.stroke();
+  ctx.setLineDash([]);
+
+  // check game over
+  if(!gameOver){
+    bodies.forEach(({body})=>{
+      if(body.position.y<DROP_Y+10&&body.speed<0.5){
+        triggerGameOver();
+      }
+    });
+  }
+}
+
+function renderNext(){
+  nctx.clearRect(0,0,60,60);
+  drawFruit(nctx,30,30,nextFruit,1);
+}
+
+function drop(){
+  if(gameOver||!canDrop)return;
+  canDrop=false;
+  addFruit(dropX,DROP_Y,currentFruit);
+  currentFruit=nextFruit;
+  nextFruit=randFruit(5);
+  renderNext();
+  setTimeout(()=>{canDrop=true;},600);
+}
+
+function triggerGameOver(){
+  if(gameOver)return;
+  gameOver=true;
+  const ov=document.getElementById('overlay');
+  ov.innerHTML=`<p>😢</p>ゲームオーバー<div style="font-size:1rem;color:#ffcc88">スコア: ${score}</div><button id="startBtn">もう一度</button>`;
+  ov.classList.remove('hidden');
+  document.getElementById('startBtn').onclick=resetGame;
+}
+
+function resetGame(){
+  // clear all fruit bodies
+  bodies.forEach(({body})=>World.remove(world,body));
+  bodies.length=0;
+  merging.clear();
+  score=0;
+  document.getElementById('score').textContent=0;
+  gameOver=false;canDrop=true;
+  currentFruit=randFruit(5);nextFruit=randFruit(5);
+  renderNext();
+  document.getElementById('overlay').classList.add('hidden');
+}
+
+// Input
+canvas.addEventListener('mousemove',e=>{
+  if(gameOver||!canDrop)return;
+  const rect=canvas.getBoundingClientRect();
+  const fi=currentFruit;
+  dropX=Math.max(FRUITS[fi].r+WALL,Math.min(W-FRUITS[fi].r-WALL,e.clientX-rect.left));
+});
+canvas.addEventListener('click',e=>{
+  if(gameOver)return;
+  const rect=canvas.getBoundingClientRect();
+  const fi=currentFruit;
+  dropX=Math.max(FRUITS[fi].r+WALL,Math.min(W-FRUITS[fi].r-WALL,e.clientX-rect.left));
+  drop();
+});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(gameOver||!canDrop)return;
+  const rect=canvas.getBoundingClientRect();
+  const fi=currentFruit;
+  dropX=Math.max(FRUITS[fi].r+WALL,Math.min(W-FRUITS[fi].r-WALL,e.touches[0].clientX-rect.left));
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(gameOver)return;
+  drop();
+},{passive:false});
+
+// Game loop
+const runner=Runner.create();
+Runner.run(runner,engine);
+
+(function loop(){
+  requestAnimationFrame(loop);
+  render();
+})();
+
+// Start button
+document.getElementById('startBtn').onclick=()=>{
+  document.getElementById('overlay').classList.add('hidden');
+  currentFruit=randFruit(5);nextFruit=randFruit(5);
+  renderNext();
+};
+renderNext();
+</script>
+</body>
+</html>
